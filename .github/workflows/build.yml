@@ -1,0 +1,85 @@
+name: Build Android APK
+
+# Repo me sirf GrandmasterChess3D.zip upload karo (unzip karne ki zarurat nahi).
+# Ye workflow zip ko khud extract karke APK banata hai aur GitHub Release me daal deta hai.
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container:
+      image: barichello/godot-ci:4.3
+    env:
+      GODOT_VERSION: "4.3"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract project from zip (or use repo files)
+        run: |
+          (apt-get update -qq && apt-get install -y -qq unzip) >/dev/null 2>&1 || true
+          ZIP=$(find . -maxdepth 2 -iname "*.zip" -not -path "./.git/*" | head -n 1)
+          if [ -n "$ZIP" ]; then
+            echo "Found zip: $ZIP"
+            mkdir -p "$GITHUB_WORKSPACE/_proj"
+            unzip -q -o "$ZIP" -d "$GITHUB_WORKSPACE/_proj"
+            SEARCH="$GITHUB_WORKSPACE/_proj"
+          else
+            echo "No zip found, using repo files"
+            SEARCH="$GITHUB_WORKSPACE"
+          fi
+          PF=$(find "$SEARCH" -name project.godot -not -path "*/.godot/*" | head -n 1)
+          if [ -z "$PF" ]; then
+            echo "ERROR: project.godot not found"
+            exit 1
+          fi
+          PROJ=$(dirname "$PF")
+          echo "Project folder: $PROJ"
+          echo "PROJ=$PROJ" >> $GITHUB_ENV
+          ls -la "$PROJ"
+
+      - name: Setup Godot templates and editor settings
+        run: |
+          mkdir -v -p ~/.local/share/godot/export_templates/
+          mkdir -v -p ~/.config/godot
+          mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable || true
+          cp -r /root/.config/godot/* ~/.config/godot/ || true
+
+      - name: Create debug keystore
+        run: |
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore "$GITHUB_WORKSPACE/debug.keystore" -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$GITHUB_WORKSPACE/debug.keystore" >> $GITHUB_ENV
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> $GITHUB_ENV
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> $GITHUB_ENV
+
+      - name: Import project
+        run: |
+          cd "$PROJ"
+          godot --headless --verbose --import || true
+
+      - name: Export Android APK
+        run: |
+          cd "$PROJ"
+          mkdir -p build
+          godot --headless --verbose --export-debug "Android" "$GITHUB_WORKSPACE/3DGrandmasterChess.apk"
+          ls -la "$GITHUB_WORKSPACE/3DGrandmasterChess.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 3DGrandmasterChess-apk
+          path: 3DGrandmasterChess.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: 3D Grandmaster Chess v1.0.${{ github.run_number }}
+          files: 3DGrandmasterChess.apk
